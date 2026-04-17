@@ -1,0 +1,20 @@
+============================================================
+Session : 2026-04-17T17:32:19.808Z
+Command : --module MyFirstModule --project C:\Users\VishnuPrasathTA.AzureAD\Mendix\App-main\App.mpr
+============================================================
+{"ts":"2026-04-17T17:32:19.808Z","level":"WARN","msg":"LIVE mode will modify your .mpr file."}
+{"ts":"2026-04-17T17:32:19.809Z","level":"WARN","msg":"Make sure the project is NOT open in Studio Pro right now."}
+{"ts":"2026-04-17T17:32:19.809Z","level":"WARN","msg":"A backup copy is strongly recommended before proceeding."}
+{"ts":"2026-04-17T17:32:19.840Z","level":"SECTION","msg":"Opening Mendix Model"}
+{"ts":"2026-04-17T17:32:19.841Z","level":"INFO","msg":"Project : C:\\Users\\VishnuPrasathTA.AzureAD\\Mendix\\App-main\\App.mpr"}
+{"ts":"2026-04-17T17:32:19.841Z","level":"INFO","msg":"Module  : MyFirstModule"}
+{"ts":"2026-04-17T17:32:19.841Z","level":"INFO","msg":"Handler : (none)"}
+{"ts":"2026-04-17T17:32:19.842Z","level":"INFO","msg":"Mode    : LIVE"}
+{"ts":"2026-04-17T17:32:19.842Z","level":"INFO","msg":"No --handler specified. Setting errorHandlingType = Custom on all risky activities."}
+{"ts":"2026-04-17T17:32:19.843Z","level":"SECTION","msg":"Scanning Microflows in \"MyFirstModule\""}
+{"ts":"2026-04-17T17:32:28.637Z","level":"OK","msg":"Found 2 microflow(s) in \"MyFirstModule\"."}
+{"ts":"2026-04-17T17:32:28.638Z","level":"SECTION","msg":"Applying Patches"}
+{"ts":"2026-04-17T17:32:28.664Z","level":"PATCHED","msg":"MyFirstModule.Microflow → Java Action","meta":{"type":"Java Action"}}
+{"ts":"2026-04-17T17:32:28.670Z","level":"PATCHED","msg":"MyFirstModule.MyFirstLogic → Java Action","meta":{"type":"Java Action"}}
+{"ts":"2026-04-17T17:32:28.671Z","level":"OK","msg":"Patches written. Open the project in Studio Pro to wire the error flow arrows."}
+{"ts":"2026-04-17T17:32:28.673Z","level":"SUMMARY","msg":"run complete","meta":{"patched":2,"skipped":0,"errors":0,"module":"MyFirstModule"}}

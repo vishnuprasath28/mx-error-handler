@@ -1,0 +1,48 @@
+{
+  "name": "@vishnuprasath28/mx-error-handler",
+  "version": "0.1.0",
+  "description": "CLI tool that audits and adds error handling to Java/JS/REST/sub-microflow activities in Mendix microflows via mxcli.",
+  "bin": {
+    "mx-error-handler": "mx-error-handler.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "mx-error-handler.js",
+    "patcher.js",
+    "audit.js",
+    "config.js",
+    "mxcli-util.js",
+    "logger.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node mx-error-handler.js",
+    "audit": "node mx-error-handler.js audit",
+    "patch": "node mx-error-handler.js patch",
+    "help": "node mx-error-handler.js --help"
+  },
+  "keywords": [
+    "mendix",
+    "mxcli",
+    "microflow",
+    "error-handling",
+    "cli",
+    "low-code",
+    "devtools",
+    "audit"
+  ],
+  "author": "Vishnu Prasath T A",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vishnuprasath28/mx-error-handler.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vishnuprasath28/mx-error-handler/issues"
+  },
+  "homepage": "https://github.com/vishnuprasath28/mx-error-handler#readme"
+}

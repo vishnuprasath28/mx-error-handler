@@ -1,0 +1,18 @@
+============================================================
+Session : 2026-04-17T12:30:06.381Z
+Command : --module MyFirstModule --project C:/Users/VishnuPrasathTA.AzureAD/Mendix/App-main/App.mpr --handler MyFirstModule.Microflow --dry-run
+============================================================
+{"ts":"2026-04-17T12:30:06.381Z","level":"SECTION","msg":"Opening Mendix Model"}
+{"ts":"2026-04-17T12:30:06.381Z","level":"INFO","msg":"Project : C:/Users/VishnuPrasathTA.AzureAD/Mendix/App-main/App.mpr"}
+{"ts":"2026-04-17T12:30:06.381Z","level":"INFO","msg":"Module  : MyFirstModule"}
+{"ts":"2026-04-17T12:30:06.381Z","level":"INFO","msg":"Handler : MyFirstModule.Microflow"}
+{"ts":"2026-04-17T12:30:06.382Z","level":"INFO","msg":"Mode    : DRY RUN (no changes written)"}
+{"ts":"2026-04-17T12:30:06.382Z","level":"SECTION","msg":"Validating Error Handler"}
+{"ts":"2026-04-17T12:30:16.581Z","level":"OK","msg":"Handler \"MyFirstModule.Microflow\" found."}
+{"ts":"2026-04-17T12:30:16.582Z","level":"SECTION","msg":"Scanning Microflows in \"MyFirstModule\""}
+{"ts":"2026-04-17T12:30:24.803Z","level":"OK","msg":"Found 2 microflow(s) in \"MyFirstModule\"."}
+{"ts":"2026-04-17T12:30:24.803Z","level":"SECTION","msg":"Dry-run Report"}
+{"ts":"2026-04-17T12:30:24.803Z","level":"PATCHED","msg":"MyFirstModule.MyFirstLogic → Java Action","meta":{"type":"Java Action"}}
+{"ts":"2026-04-17T12:30:24.803Z","level":"PATCHED","msg":"MyFirstModule.Microflow → Java Action","meta":{"type":"Java Action"}}
+{"ts":"2026-04-17T12:30:24.803Z","level":"WARN","msg":"DRY RUN — no changes were written."}
+{"ts":"2026-04-17T12:30:24.804Z","level":"SUMMARY","msg":"run complete","meta":{"patched":2,"skipped":0,"errors":0,"module":"MyFirstModule"}}
