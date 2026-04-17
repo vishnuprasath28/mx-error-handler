@@ -1,6 +1,6 @@
 {
   "name": "@vishnuprasath28/mx-error-handler",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "CLI tool that audits and adds error handling to Java/JS/REST/sub-microflow activities in Mendix microflows via mxcli.",
   "bin": {
     "mx-error-handler": "mx-error-handler.js"
@@ -14,6 +14,7 @@
     "patcher.js",
     "audit.js",
     "config.js",
+    "safety.js",
     "mxcli-util.js",
     "logger.js",
     "README.md",

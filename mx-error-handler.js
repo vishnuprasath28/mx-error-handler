@@ -58,6 +58,13 @@ ${bold("Patch-only options:")}
   ${cyan("--handler")} <qname>          Call this microflow in the handler body (e.g. Common.MF_HandleError).
   ${cyan("--dry-run")}                  Preview changes — write nothing.
 
+${bold("Safety options (advanced — defaults are safe):")}
+  ${cyan("--no-backup")}                Skip the snapshot. Faster but verification is also skipped
+                             — corruption cannot be auto-reverted. Not recommended.
+  ${cyan("--keep-backup")}              Keep the snapshot folder even when the run succeeds.
+  ${cyan("--force")}                    Patch microflows that contain known mxcli-roundtrip-risky
+                             constructs (SHOW PAGE with parameter mappings, etc.). Not recommended.
+
 ${bold("Examples:")}
   node mx-error-handler.js audit --all-modules --project ./App.mpr
   node mx-error-handler.js patch --all-modules --project ./App.mpr
@@ -83,6 +90,9 @@ function parseArgs(argv) {
       case "--handler":           args.handler       = raw[++i];       break;
       case "--log-template":      args.logTemplate   = raw[++i];       break;
       case "--error-handling":    args.errorHandling = raw[++i];       break;
+      case "--no-backup":         args.noBackup      = true;           break;
+      case "--keep-backup":       args.keepBackup    = true;           break;
+      case "--force":             args.force         = true;           break;
       default:
         console.error(red(`Unknown option: ${raw[i]}`));
         console.error(`Run with --help to see usage.`);
@@ -141,9 +151,15 @@ function validateInputs(args) {
     if (args.handler)       errors.push(`--handler does not apply to 'audit'.`);
     if (args.logTemplate)   errors.push(`--log-template does not apply to 'audit'.`);
     if (args.dryRun)        errors.push(`--dry-run does not apply to 'audit' (audit never writes).`);
+    if (args.noBackup)      errors.push(`--no-backup does not apply to 'audit'.`);
+    if (args.keepBackup)    errors.push(`--keep-backup does not apply to 'audit'.`);
+    if (args.force)         errors.push(`--force does not apply to 'audit'.`);
   }
   if (args.errorHandling === "continue" && args.logTemplate) {
     errors.push(`--log-template has no effect with --error-handling continue (no log message is emitted).`);
+  }
+  if (args.noBackup && args.keepBackup) {
+    errors.push(`--no-backup and --keep-backup are mutually exclusive.`);
   }
 
   return errors;
@@ -180,6 +196,9 @@ async function main() {
         handlerName:   args.handler ?? null,
         logTemplate:   args.logTemplate ?? null,
         dryRun:        !!args.dryRun,
+        noBackup:      !!args.noBackup,
+        keepBackup:    !!args.keepBackup,
+        force:         !!args.force,
       });
     }
   } catch (err) {

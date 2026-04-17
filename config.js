@@ -40,6 +40,10 @@ function loadConfig(projectPath) {
   try { raw = fs.readFileSync(configPath, "utf8"); }
   catch (e) { throw new Error(`Could not read ${configPath}: ${e.message}`); }
 
+  // An empty or whitespace-only file is treated as "no config" rather than
+  // a fatal error — the user likely created it as a placeholder.
+  if (raw.trim() === "") return { _path: null, templates: {} };
+
   let parsed;
   try { parsed = JSON.parse(raw); }
   catch (e) { throw new Error(`Invalid JSON in ${configPath}: ${e.message}`); }
