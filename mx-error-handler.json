@@ -1,0 +1,13 @@
+{
+  "templates": {
+    "apiflowLogTemplate":       "'API error in {microflow} at ' + toString([%CurrentDateTime%]) + ' - type: ' + $latestError/ErrorType + ', msg: ' + $latestError/Message",
+    "microflowLogTemplate":     "'Error in {microflow} at ' + toString([%CurrentDateTime%]) + ' - type: ' + $latestError/ErrorType + ', msg: ' + $latestError/Message",
+    "verboseTemplate":          "'[ERR] {module}.{microflow} - type: ' + $latestError/ErrorType + ' | msg: ' + $latestError/Message"
+  },
+
+  "defaultLogTemplate": "verboseTemplate",
+
+  "moduleLogTemplates": {
+    "MyFirstModule": "microflowLogTemplate"
+  }
+}
