@@ -4,6 +4,12 @@ A small command-line tool that sets up error handling on risky activities (Java 
 
 ---
 
+## What's new in 0.3.2
+
+- **mxcli parse errors no longer abort the run.** If mxcli rejects the MDL (observed: mxcli's own `describe` emits strings with unescaped `'` — its own round-trip bug), the microflow is skipped with a `skipped-parse-error` outcome. Parse errors happen before any write, so no rollback is needed. Other microflows still get patched.
+
+---
+
 ## What's new in 0.3.1
 
 - **Per-microflow rollback fix.** 0.3.0's rollback path compared fingerprints after re-executing the original MDL, but mxcli's describe→exec→describe is non-idempotent for exactly the constructs that put us in the failure path — so the rollback "failed" its own verification and the run escalated to a full-snapshot restore (the old all-or-nothing behavior). 0.3.1 trusts a successful `exec` as "restored" and leaves the outer snapshot as the final safety net. Now a single risky microflow really is skipped without touching the rest.

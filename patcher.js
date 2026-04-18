@@ -84,6 +84,16 @@ class SafetyAbort extends Error {
   constructor(reason) { super(reason); this.name = "SafetyAbort"; }
 }
 
+/**
+ * Detect mxcli parser errors. mxcli rejects malformed MDL (e.g. an
+ * unescaped `'` in its OWN describe output — an mxcli bug we've
+ * observed) before applying any write, so these failures leave the
+ * microflow in its original state. Safe to skip without rollback.
+ */
+function isMxcliParseError(msg) {
+  return /parse error|token recognition/i.test(String(msg || ""));
+}
+
 // ── Diagnostic + per-microflow rollback helpers ──────────────────
 
 /**
@@ -334,6 +344,21 @@ async function patch({
       try {
         execMdl(projectPath, c.newMdl);
       } catch (e) {
+        // mxcli parse errors fail *before* any write. The microflow was
+        // never touched — we don't need to roll it back, we can just
+        // skip it. Attempting the rollback here would re-exec the same
+        // describe output (which mxcli also can't parse, since the bug
+        // is in mxcli's own describe-then-exec roundtrip), which would
+        // escalate us to a full-snapshot restore and undo every
+        // previous successful patch. That was the old bug.
+        if (isMxcliParseError(e.message)) {
+          try { dumpVerifyDiff(label, c.mdl, null, `mxcli parse error: ${e.message}`); } catch (_) {}
+          log.warn(`${label}: mxcli couldn't parse the MDL (likely an unescaped apostrophe in mxcli's describe output — its own bug).`);
+          log.success(`${label}: no changes were written — skipping, continuing with the other microflows`);
+          outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "skipped-parse-error", note: (e.message || "").slice(0, 200) });
+          skippedVerify++;
+          continue;
+        }
         handleSingleFailure(c, label, `mxcli exec failed: ${e.message}`, e.message, c.mdl, null);
         continue;
       }
@@ -462,4 +487,4 @@ function writePatchCsv(outPath, outcomes, meta) {
   fs.writeFileSync(outPath, csv, "utf8");
 }
 
-module.exports = { patch, transformMdl, buildHandlerBlock };
+module.exports = { patch, transformMdl, buildHandlerBlock, isMxcliParseError };
