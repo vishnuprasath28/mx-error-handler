@@ -4,14 +4,26 @@ A small command-line tool that sets up error handling on risky activities (Java 
 
 ---
 
+## What's new in 0.2.0
+
+- **New `restore` subcommand** — roll a project back to any `_mxerrhandler_snapshot_*` folder if Studio Pro surfaces a problem the in-process verification didn't catch.
+- **New `cleanup` subcommand** — list and delete old snapshot folders (interactive, or `--yes` for CI).
+- **`patch` now always keeps its snapshot.** Run `cleanup` after you've confirmed the project loads in Studio Pro. The old `--keep-backup` flag is gone — this is now the default behavior.
+- **Pre-flight "risky construct" skip removed.** Every microflow is attempted; per-microflow verification (Layer 3) is the real safety net.
+- **Added safety checks** to catch BSON/MDL divergence earlier and abort before a bad write.
+
+---
+
 ## One-minute overview
 
 | | Does it change anything? | What it gives you |
 |---|---|---|
 | `audit` | **No** | An Excel-compatible CSV report saved next to `App.mpr`, listing every microflow's error-handling state. Exits 1 on broken handlers (CE0011) — perfect for CI. |
-| `patch` | **Yes** | Adds error handlers (Custom with rollback + `LOG ERROR` message) to activities that use the default Rollback. Snapshot + verification + auto-restore guarantees the project is never left in a broken state. |
+| `patch` | **Yes** | Adds error handlers (Custom with rollback + `LOG ERROR` message) to activities that use the default Rollback. Always writes a snapshot first; if any patched flow corrupts, the snapshot is restored automatically. |
+| `restore` | **Yes (undoes a patch)** | Copies a snapshot folder back over `App.mpr` + `mprcontents/`. Use when Studio Pro reveals a problem that the in-process verification didn't catch. |
+| `cleanup` | **Yes (deletes snapshot folders)** | Lists `_mxerrhandler_snapshot_*` folders next to the project and deletes them after you confirm the patch is good. |
 
-Think of `audit` as `git status` and `patch` as `git commit` — `audit` tells you what's wrong, `patch` fixes it.
+Think of `audit` as `git status` and `patch` as `git commit` — `audit` tells you what's wrong, `patch` fixes it. `restore` is your `git reset`; `cleanup` is `git gc`.
 
 ---
 
@@ -222,10 +234,10 @@ Run the tool twice in a row — the second run does nothing new. Safe to wire in
 Three independent layers protect your project. **A `patch` run either fully succeeds or leaves the project bit-for-bit identical to where it started — there is no in-between.**
 
 ### Layer 1 — Snapshot before any write
-Before patching, the tool copies `App.mpr` + the entire `mprcontents/` folder into `_mxerrhandler_snapshot_<timestamp>/` next to your project. Restore is a plain file copy (no SQLite editing, no state-tracking). Snapshot is auto-deleted on success and **kept on failure** so you can inspect or manually restore.
+Before patching, the tool copies `App.mpr` + the entire `mprcontents/` folder into `_mxerrhandler_snapshot_<timestamp>/` next to your project. Restore is a plain file copy (no SQLite editing, no state-tracking). **The snapshot is always kept** — including after a successful run — because Studio Pro sometimes surfaces corruption that the in-process verification cannot see. Once you've opened `App.mpr` and confirmed it loads cleanly, reclaim disk with `mx-error-handler cleanup`. If something is wrong, roll back with `mx-error-handler restore`.
 
-### Layer 2 — (removed in v0.5.0)
-Earlier versions had a pre-flight skip for "risky" constructs. That's been removed. Everything gets attempted; Layer 3 is the real safety net.
+### Layer 2 — (removed)
+Earlier drafts had a pre-flight skip for "risky" constructs. It's been removed — everything gets attempted, and Layer 3 is the real safety net.
 
 ### Layer 3 — Per-microflow verification
 After every `mxcli exec`, the tool re-describes the microflow and compares its structural fingerprint (error handlers stripped, whitespace normalized) to the pre-patch fingerprint. Any difference outside the `ON ERROR` clauses is treated as corruption — the run aborts and the snapshot is restored automatically.
@@ -235,7 +247,24 @@ After every `mxcli exec`, the tool re-describes the microflow and compares its s
 | Flag | Effect |
 |---|---|
 | `--no-backup` | Skip snapshot + verification. Faster but a failure cannot be auto-reverted. Not recommended. |
-| `--keep-backup` | Preserve the snapshot folder even on success (useful for diffing the change set). |
+
+---
+
+## Undoing a patch (`restore`) and reclaiming disk (`cleanup`)
+
+`patch` always keeps its snapshot. Two commands manage the lifecycle from there:
+
+**Roll back to a snapshot** (use when Studio Pro reports a broken model after a patch):
+```bash
+mx-error-handler restore _mxerrhandler_snapshot_2026-04-18T05-44-34 --project ./App.mpr
+```
+The snapshot path is the folder printed at the end of the `patch` run. After restore, the project is bit-for-bit identical to its pre-patch state.
+
+**Delete old snapshots** (interactive by default):
+```bash
+mx-error-handler cleanup --project ./App.mpr
+```
+Lists every `_mxerrhandler_snapshot_*` folder next to the project, shows total size, and prompts: delete all, keep only the most recent, or cancel. For CI / non-interactive use, pass `--yes` to delete all without prompting.
 
 ---
 
@@ -253,11 +282,16 @@ After every `mxcli exec`, the tool re-describes the microflow and compares its s
 ## Full `--help` reference
 
 ```
-mx-error-handler <audit|patch> [options]
+mx-error-handler <audit|patch|restore|cleanup> [options]
 
 Subcommands:
-  audit   Report-only. Exits 1 if broken handlers (CE0011) are found.
-  patch   Apply error handling to activities using the default Rollback.
+  audit     Report-only. Exits 1 if broken handlers (CE0011) are found.
+  patch     Apply error handling to activities using the default Rollback.
+            Always creates a safety snapshot; you clean it up with 'cleanup'
+            after confirming the project loads in Studio Pro.
+  restore   Roll back to a snapshot folder when Studio Pro reveals a patch broke something.
+            Usage: mx-error-handler restore <snapshot-path> --project ./App.mpr
+  cleanup   List and delete old snapshot folders (interactive, or --yes for CI).
 
 Required:
   --project <path>           Path to the .mpr file.
@@ -275,7 +309,7 @@ Patch-only options:
 
 Safety options (advanced — defaults are safe):
   --no-backup                Skip snapshot + verification. Not recommended.
-  --keep-backup              Preserve the snapshot folder on success.
+  --yes                      For 'cleanup': skip the confirmation prompt.
 ```
 
 ---
@@ -289,11 +323,16 @@ mx-error-handler audit --all-modules --project ./App.mpr
 # 2. Preview what patch would do
 mx-error-handler patch --all-modules --dry-run --project ./App.mpr
 
-# 3. Apply
+# 3. Apply — writes a snapshot and keeps it
 mx-error-handler patch --all-modules --project ./App.mpr
 
-# 4. Confirm it's all green
-mx-error-handler audit --all-modules --project ./App.mpr
+# 4. Open App.mpr in Studio Pro and confirm it loads cleanly.
+
+# 5a. All good → reclaim disk
+mx-error-handler cleanup --project ./App.mpr
+
+# 5b. Broken  → roll back
+mx-error-handler restore <snapshot-path> --project ./App.mpr
 ```
 
 Every run also writes a log file to `./mx-logs/run-<timestamp>.log` with a full record of what was done.
