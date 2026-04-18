@@ -62,10 +62,54 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 }
 
-async function audit({ projectPath, moduleName, allModules }) {
+function paintStatus(s) {
+  const C = { reset: "\x1b[0m", red: "\x1b[31m", yellow: "\x1b[33m", green: "\x1b[32m", dim: "\x1b[2m" };
+  switch (s) {
+    case "broken":   return `${C.red}✖ broken${C.reset}`;
+    case "rollback": return `${C.yellow}⚠ rollback${C.reset}`;
+    case "ok":       return `${C.green}✓ ok${C.reset}`;
+    case "none":     return `${C.dim}– none${C.reset}`;
+  }
+  return s;
+}
+function pad(s, w) {
+  const visible = String(s).replace(/\x1b\[[0-9;]*m/g, "");
+  return s + " ".repeat(Math.max(0, w - visible.length));
+}
+
+function printAuditTable(rows) {
+  const COL = { mod: 22, mf: 34, counts: 10, status: 14 };
+  const header =
+    pad("Module", COL.mod) +
+    pad("Microflow", COL.mf) +
+    pad("Rollback", COL.counts) +
+    pad("Unwired", COL.counts) +
+    pad("CustWRb", COL.counts) +
+    pad("CustNoRb", COL.counts) +
+    pad("Continue", COL.counts) +
+    pad("Status", COL.status);
+  console.log("\n" + header);
+  console.log("─".repeat(header.length));
+  for (const r of rows) {
+    if (r.status === "none") continue; // hide noise
+    console.log(
+      pad(r.module, COL.mod) +
+      pad(r.microflow, COL.mf) +
+      pad(String(r.rollback), COL.counts) +
+      pad(String(r.unwired), COL.counts) +
+      pad(String(r.customWithRb), COL.counts) +
+      pad(String(r.customWithoutRb), COL.counts) +
+      pad(String(r.continue_), COL.counts) +
+      pad(paintStatus(r.status), COL.status),
+    );
+  }
+}
+
+async function audit({ projectPath, moduleName, allModules, output = "both" }) {
   log.section("Error-handling audit");
   log.info(`Project : ${projectPath}`);
   log.info(`Target  : ${allModules ? "all user modules" : moduleName}`);
+  log.info(`Output  : ${output}`);
 
   const modules = allModules
     ? listUserModules(projectPath).map(m => m.name)
@@ -140,15 +184,22 @@ async function audit({ projectPath, moduleName, allModules }) {
   csv += csvRow(["Custom without rollback (complete)", totals.customWithoutRb]);
   csv += csvRow(["Continue (swallow)",                 totals.continue_]);
 
-  // ── Write CSV next to App.mpr ─────────────────────────────
-  const projectDir = path.dirname(path.resolve(projectPath));
-  const fileName   = `mx-error-handler-audit-${timestamp()}.csv`;
-  const outPath    = path.join(projectDir, fileName);
-  fs.writeFileSync(outPath, csv, "utf8");
+  // ── Honor --output ────────────────────────────────────────
+  let csvPath = null;
+  if (output === "csv" || output === "both") {
+    const projectDir = path.dirname(path.resolve(projectPath));
+    const fileName   = `mx-error-handler-audit-${timestamp()}.csv`;
+    csvPath          = path.join(projectDir, fileName);
+    fs.writeFileSync(csvPath, csv, "utf8");
+  }
 
-  // ── Console summary ───────────────────────────────────────
+  if (output === "console" || output === "both") {
+    printAuditTable(rows);
+  }
+
+  // ── Summary line (always printed) ────────────────────────
   console.log();
-  log.success(`Report saved: ${outPath}`);
+  if (csvPath) log.success(`Report saved: ${csvPath}`);
   console.log(`  Microflows scanned : ${totalMicroflows}`);
   console.log(`  Modules with issues: ${modulesWithIssues.size}`);
   console.log(`  ✖ unwired (CE0011) : ${totals.unwired}`);

@@ -111,6 +111,51 @@ function deleteSnapshot(snapshotPath) {
   fs.rmSync(snapshotPath, { recursive: true, force: true });
 }
 
+/**
+ * List every `_mxerrhandler_snapshot_*` folder next to the project,
+ * sorted newest-first. Returns [{ path, name, created, sizeBytes }].
+ */
+function listSnapshots(projectPath) {
+  const projectDir = path.dirname(path.resolve(projectPath));
+  if (!fs.existsSync(projectDir)) return [];
+
+  const results = [];
+  for (const name of fs.readdirSync(projectDir)) {
+    if (!name.startsWith("_mxerrhandler_snapshot_")) continue;
+    const full = path.join(projectDir, name);
+    let stat;
+    try { stat = fs.statSync(full); } catch (_) { continue; }
+    if (!stat.isDirectory()) continue;
+    results.push({
+      path:      full,
+      name,
+      created:   stat.mtime,
+      sizeBytes: dirSizeSync(full),
+    });
+  }
+  results.sort((a, b) => b.created - a.created);
+  return results;
+}
+
+function dirSizeSync(dir) {
+  let total = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += dirSizeSync(p);
+    else {
+      try { total += fs.statSync(p).size; } catch (_) { /* ignore */ }
+    }
+  }
+  return total;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+
 // ── 2. RISK SCAN ───────────────────────────────────────────────────────
 
 /**
@@ -236,6 +281,8 @@ module.exports = {
   createSnapshot,
   restoreSnapshot,
   deleteSnapshot,
+  listSnapshots,
+  formatBytes,
   // risk scan
   checkRoundtripRisk,
   ROUNDTRIP_RISK_PATTERNS,

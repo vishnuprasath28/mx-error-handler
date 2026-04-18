@@ -21,7 +21,9 @@
  * in exactly the state it started in. There is no in-between.
  */
 
-const log = require("./logger");
+const fs   = require("fs");
+const path = require("path");
+const log  = require("./logger");
 const {
   listUserModules,
   listModuleMicroflows,
@@ -37,7 +39,6 @@ const {
   createSnapshot,
   restoreSnapshot,
   deleteSnapshot,
-  checkRoundtripRisk,
   verifyPatch,
 } = require("./safety");
 
@@ -85,7 +86,7 @@ class SafetyAbort extends Error {
 async function patch({
   projectPath, moduleName, allModules,
   errorHandling, handlerName, logTemplate,
-  dryRun, noBackup, keepBackup, force,
+  dryRun, noBackup, output,
 }) {
   log.section("Opening Mendix Model");
   log.info(`Project : ${projectPath}`);
@@ -93,9 +94,7 @@ async function patch({
   log.info(`Strategy: ${errorHandling}`);
   log.info(`Handler : ${handlerName ?? "(none)"}`);
   log.info(`Mode    : ${dryRun ? "DRY RUN" : "LIVE"}`);
-  if (noBackup)   log.warn(`Safety  : --no-backup — risky patches will not be auto-revertible`);
-  if (keepBackup) log.info(`Safety  : --keep-backup — snapshot will be preserved on success`);
-  if (force)      log.warn(`Safety  : --force — risky-pattern check disabled`);
+  if (noBackup) log.warn(`Safety  : --no-backup — verification disabled, corruption cannot be auto-reverted`);
 
   // Config
   let config = { _path: null };
@@ -137,8 +136,6 @@ async function patch({
       try { mdl = describeMicroflow(projectPath, mf.qualifiedName); }
       catch (e) { log.error(`describe failed for ${mf.qualifiedName}: ${e.message}`); continue; }
 
-      const risk = force ? null : checkRoundtripRisk(mdl);
-
       const ctx = {
         strategy:      errorHandling,
         microflowName: mf.name,
@@ -149,29 +146,24 @@ async function patch({
       };
       const { mdl: newMdl, patchCount } = transformMdl(mdl, ctx);
 
-      candidates.push({ mod, mf, mdl, newMdl, patchCount, risk, ctx });
+      candidates.push({ mod, mf, mdl, newMdl, patchCount, ctx });
     }
   }
 
-  const eligible    = candidates.filter(c => !c.risk && c.patchCount > 0);
-  const skippedRisk = candidates.filter(c =>  c.risk);
-  const skippedDone = candidates.filter(c => !c.risk && c.patchCount === 0);
+  const eligible    = candidates.filter(c => c.patchCount > 0);
+  const skippedDone = candidates.filter(c => c.patchCount === 0);
 
-  // Report skipped microflows up front
-  for (const c of skippedRisk) {
-    log.skipped(`${c.mod}.${c.mf.name}`, "risky construct", "skipped (use --force to override)", c.risk);
-  }
   for (const c of skippedDone) {
     log.skipped(`${c.mod}.${c.mf.name}`, "no bare ON ERROR", "already complete or intentional", "");
   }
 
   if (eligible.length === 0) {
     log.info("Nothing to patch.");
-    log.summary(0, skippedRisk.length + skippedDone.length, 0, allModules ? "(all user modules)" : moduleName);
+    log.summary(0, skippedDone.length, 0, allModules ? "(all user modules)" : moduleName);
     return;
   }
 
-  log.success(`${eligible.length} microflow(s) eligible to patch, ${skippedRisk.length} skipped as risky, ${skippedDone.length} already done.`);
+  log.success(`${eligible.length} microflow(s) eligible, ${skippedDone.length} already complete.`);
 
   if (dryRun) {
     log.section("Dry-run Report");
@@ -179,7 +171,7 @@ async function patch({
       log.patched(`${c.mod}.${c.mf.name}`, `${c.patchCount} clause${c.patchCount === 1 ? "" : "s"}`, errorHandling);
     }
     log.warn("DRY RUN — no changes were written.");
-    log.summary(eligible.length, skippedRisk.length + skippedDone.length, 0,
+    log.summary(eligible.length, skippedDone.length, 0,
                 allModules ? "(all user modules)" : moduleName);
     return;
   }
@@ -202,6 +194,11 @@ async function patch({
   let errors  = 0;
   let aborted = false;
 
+  // Outcomes per microflow — used to write the CSV patch report and
+  // mark everything correctly if a safety abort rolls us back.
+  const outcomes = [];
+  for (const c of skippedDone) outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: 0, strategy: "—", result: "skipped-complete", note: "" });
+
   try {
     for (const c of eligible) {
       const label = `${c.mod}.${c.mf.name}`;
@@ -211,6 +208,7 @@ async function patch({
         execMdl(projectPath, c.newMdl);
       } catch (e) {
         log.error(`exec failed for ${label}: ${e.message}`);
+        outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "error", note: e.message });
         throw new SafetyAbort(`mxcli exec failed on ${label}`);
       }
 
@@ -220,16 +218,19 @@ async function patch({
         try { afterMdl = describeMicroflow(projectPath, c.mf.qualifiedName); }
         catch (e) {
           log.error(`post-patch describe failed for ${label}: ${e.message}`);
+          outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "error", note: "post-patch describe failed" });
           throw new SafetyAbort(`could not verify ${label} after patch`);
         }
         const verdict = verifyPatch(c.mdl, afterMdl);
         if (!verdict.ok) {
           log.error(`verification FAILED for ${label}: ${verdict.reason}`);
+          outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "verification-failed", note: verdict.reason });
           throw new SafetyAbort(`verification failed on ${label}`);
         }
       }
 
       log.patched(label, `${c.patchCount} clause${c.patchCount === 1 ? "" : "s"}`, errorHandling);
+      outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "patched", note: "" });
       patched++;
     }
   } catch (e) {
@@ -261,26 +262,71 @@ async function patch({
     }
   }
 
-  // ── CLEANUP ──
+  // ── SNAPSHOT PRESERVATION ──
+  // Snapshots are always kept after a successful run, because our
+  // in-process verification cannot see failure modes that only surface
+  // when Studio Pro opens the project (e.g. PageParameterMapping.Variable = null).
+  // The user confirms success in Studio Pro, then runs `cleanup` to delete.
   if (snapshot && !aborted) {
-    if (keepBackup) {
-      log.info(`Snapshot preserved at: ${snapshot}`);
-    } else {
-      try { deleteSnapshot(snapshot); }
-      catch (e) { log.warn(`Could not delete snapshot ${snapshot}: ${e.message}`); }
+    log.info(`Snapshot preserved: ${snapshot}`);
+  }
+
+  // If we aborted, everything that had succeeded got rolled back.
+  // Rewrite earlier "patched" outcomes to "reverted" so the CSV tells the truth.
+  if (aborted) {
+    for (const o of outcomes) {
+      if (o.result === "patched") o.result = "reverted";
     }
   }
 
+  // ── Write CSV patch report if requested ───────────────
+  if ((output === "csv" || output === "both") && outcomes.length > 0) {
+    const projectDir = path.dirname(path.resolve(projectPath));
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const outPath = path.join(projectDir, `mx-error-handler-patch-${ts}.csv`);
+    writePatchCsv(outPath, outcomes, { strategy: errorHandling, dryRun, aborted });
+    log.success(`Patch report saved: ${outPath}`);
+  }
+
   if (!aborted && patched > 0) {
-    log.success("Patches applied. Open in Studio Pro to review.");
+    log.success("Patches applied. Open in Studio Pro to verify.");
+    if (snapshot) {
+      log.info("");
+      log.info("Next steps:");
+      log.info(`  1. Open App.mpr in Studio Pro and confirm the project loads cleanly.`);
+      log.info(`  2a. If all good  →  mx-error-handler cleanup --project ./App.mpr`);
+      log.info(`  2b. If broken    →  mx-error-handler restore "${snapshot}" --project ./App.mpr`);
+    }
   }
 
   log.summary(
     patched,
-    skippedRisk.length + skippedDone.length,
+    skippedDone.length,
     errors,
     allModules ? "(all user modules)" : moduleName,
   );
+}
+
+// ── CSV helpers ────────────────────────────────────────────
+function csvCell(v) {
+  const s = String(v ?? "");
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+function csvRow(cells) { return cells.map(csvCell).join(",") + "\r\n"; }
+
+function writePatchCsv(outPath, outcomes, meta) {
+  let csv = "";
+  csv += csvRow(["Module", "Microflow", "Qualified Name", "Clauses", "Strategy", "Result", "Note"]);
+  for (const o of outcomes) {
+    csv += csvRow([o.mod, o.microflow, o.qualified, o.patchCount, o.strategy, o.result, o.note]);
+  }
+  csv += "\r\n";
+  csv += csvRow(["Run Metadata"]);
+  csv += csvRow(["Strategy", meta.strategy]);
+  csv += csvRow(["Dry run",  meta.dryRun ? "yes" : "no"]);
+  csv += csvRow(["Aborted",  meta.aborted ? "yes (rollback via snapshot)" : "no"]);
+  fs.writeFileSync(outPath, csv, "utf8");
 }
 
 module.exports = { patch, transformMdl, buildHandlerBlock };

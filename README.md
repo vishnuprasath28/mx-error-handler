@@ -8,8 +8,8 @@ A small command-line tool that sets up error handling on risky activities (Java 
 
 | | Does it change anything? | What it gives you |
 |---|---|---|
-| `audit` | **No** | A report of which microflows have proper error handling and which don't. |
-| `patch` | **Yes** | Adds error handlers (Custom with rollback + `LOG ERROR` message) to activities that use the default Rollback. |
+| `audit` | **No** | An Excel-compatible CSV report saved next to `App.mpr`, listing every microflow's error-handling state. Exits 1 on broken handlers (CE0011) — perfect for CI. |
+| `patch` | **Yes** | Adds error handlers (Custom with rollback + `LOG ERROR` message) to activities that use the default Rollback. Snapshot + verification + auto-restore guarantees the project is never left in a broken state. |
 
 Think of `audit` as `git status` and `patch` as `git commit` — `audit` tells you what's wrong, `patch` fixes it.
 
@@ -48,6 +48,7 @@ Run these from inside your Mendix project folder (where `App.mpr` lives):
 ```bash
 mx-error-handler audit --all-modules --project ./App.mpr
 ```
+By default writes a CSV report next to `App.mpr` AND prints the table in the terminal. Pick one with `--output console` or `--output csv`. `patch` accepts the same flag and writes its own per-microflow report.
 
 **Preview what `patch` would do without writing anything:**
 ```bash
@@ -58,6 +59,7 @@ mx-error-handler patch --all-modules --dry-run --project ./App.mpr
 ```bash
 mx-error-handler patch --all-modules --project ./App.mpr
 ```
+Before any write, the tool snapshots `App.mpr` + `mprcontents/`. After every patched microflow it re-checks that nothing else changed. Any failure → automatic full restore. See [Safety guarantees](#safety-guarantees) below.
 
 ---
 
@@ -209,7 +211,31 @@ The tool only touches **bare** error clauses:
 | `ON ERROR WITHOUT ROLLBACK { ... };` | **Skipped.** |
 | `ON ERROR CONTINUE;` (you chose to swallow) | **Skipped.** |
 
-Run the tool twice in a row — the second run does nothing new. It's safe to wire into CI or a pre-commit hook.
+Every microflow that needs patching is attempted. The verification layer (see below) re-describes each one after patching and checks that nothing changed beyond the error handler. If mxcli happened to drop data on the rebuild, that microflow is automatically reverted from the snapshot — the successful ones stay.
+
+Run the tool twice in a row — the second run does nothing new. Safe to wire into CI or a pre-commit hook.
+
+---
+
+## Safety guarantees
+
+Three independent layers protect your project. **A `patch` run either fully succeeds or leaves the project bit-for-bit identical to where it started — there is no in-between.**
+
+### Layer 1 — Snapshot before any write
+Before patching, the tool copies `App.mpr` + the entire `mprcontents/` folder into `_mxerrhandler_snapshot_<timestamp>/` next to your project. Restore is a plain file copy (no SQLite editing, no state-tracking). Snapshot is auto-deleted on success and **kept on failure** so you can inspect or manually restore.
+
+### Layer 2 — (removed in v0.5.0)
+Earlier versions had a pre-flight skip for "risky" constructs. That's been removed. Everything gets attempted; Layer 3 is the real safety net.
+
+### Layer 3 — Per-microflow verification
+After every `mxcli exec`, the tool re-describes the microflow and compares its structural fingerprint (error handlers stripped, whitespace normalized) to the pre-patch fingerprint. Any difference outside the `ON ERROR` clauses is treated as corruption — the run aborts and the snapshot is restored automatically.
+
+### Override flags (advanced — defaults are safe)
+
+| Flag | Effect |
+|---|---|
+| `--no-backup` | Skip snapshot + verification. Faster but a failure cannot be auto-reverted. Not recommended. |
+| `--keep-backup` | Preserve the snapshot folder even on success (useful for diffing the change set). |
 
 ---
 
@@ -238,11 +264,18 @@ Required:
   --module <name>  OR        Process a single module.
   --all-modules              Process every user module.
 
+Reporting:
+  --output <console|csv|both> Pick report format. Default: both.
+
 Patch-only options:
   --error-handling <type>    custom-with-rollback (default) | custom-without-rollback | continue
   --log-template <name|expr> Named template from mx-error-handler.json, or a raw MDL expression.
   --handler <qname>          Call this microflow in the handler body.
   --dry-run                  Preview changes — write nothing.
+
+Safety options (advanced — defaults are safe):
+  --no-backup                Skip snapshot + verification. Not recommended.
+  --keep-backup              Preserve the snapshot folder on success.
 ```
 
 ---
