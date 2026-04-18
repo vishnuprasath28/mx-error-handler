@@ -11,7 +11,8 @@
 const fs   = require("fs");
 const path = require("path");
 const log  = require("./logger");
-const { restoreSnapshot } = require("./safety");
+const { Progress } = require("./progress");
+const { restoreSnapshot, countFilesSync } = require("./safety");
 
 function validateSnapshot(snapshotPath, projectPath) {
   if (!fs.existsSync(snapshotPath)) {
@@ -36,8 +37,28 @@ async function restore({ projectPath, snapshotPath }) {
   try { validateSnapshot(snapshotPath, projectPath); }
   catch (e) { log.fatal(e.message); }
 
+  // Total = 1 (App.mpr) + every file under mprcontents/.
+  const snapMprcontents = path.join(snapshotPath, "mprcontents");
+  const totalFiles = 1 + countFilesSync(snapMprcontents);
+  const progress   = new Progress({ total: totalFiles, title: "Restoring snapshot" });
+  log.setProgress(progress);
+  progress.start();
+
+  let copied = 0;
   try {
-    restoreSnapshot(projectPath, snapshotPath);
+    restoreSnapshot(projectPath, snapshotPath, ({ phase, current, total, label }) => {
+      if (phase === "mpr" && current === 1) {
+        copied++;
+        progress.tick({ current: copied, label });
+      } else if (phase === "mprcontents") {
+        copied++;
+        progress.tick({ current: copied, label: `mprcontents/${label}` });
+      } else if (phase === "clear") {
+        progress.setLabel(label);
+      }
+    });
+    progress.stop();
+    log.setProgress(null);
     log.success("Project restored to its pre-patch state.");
     log.info("");
     log.info("Next steps:");
@@ -47,6 +68,8 @@ async function restore({ projectPath, snapshotPath }) {
     log.info(`     • clean up all snapshots   : mx-error-handler cleanup --project "${projectPath}"`);
     return 0;
   } catch (e) {
+    progress.stop();
+    log.setProgress(null);
     log.fatal(`Restore failed: ${e.message}`);
   }
 }

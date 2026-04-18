@@ -21,6 +21,16 @@ const LOG_DIR  = path.join(process.cwd(), "mx-logs");
 const LOG_FILE = path.join(LOG_DIR, `run-${timestamp()}.log`);
 let   _stream  = null;
 
+// ── Active-progress hook ──────────────────────────────────────
+// When a Progress widget is active, all console output is routed through
+// its write() so the live bar is torn down, the line prints permanently,
+// and the bar redraws below. Callers do `logger.setProgress(widget)` and
+// `logger.setProgress(null)` around their live phase.
+let _progress = null;
+function setProgress(p) { _progress = p; }
+function out(text)  { if (_progress && _progress._active) _progress.write(text); else console.log(text); }
+function err(text)  { if (_progress && _progress._active) _progress.write(text); else console.error(text); }
+
 function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 }
@@ -50,36 +60,38 @@ const logger = {
 
   logFile() { return LOG_FILE; },
 
+  setProgress,
+
   section(title) {
     const bar = "─".repeat(52);
-    console.log(`\n${C.bold}${C.cyan}${bar}${C.reset}`);
-    console.log(`${C.bold}${C.cyan}  ${title}${C.reset}`);
-    console.log(`${C.bold}${C.cyan}${bar}${C.reset}`);
+    out(`\n${C.bold}${C.cyan}${bar}${C.reset}`);
+    out(`${C.bold}${C.cyan}  ${title}${C.reset}`);
+    out(`${C.bold}${C.cyan}${bar}${C.reset}`);
     toFile("SECTION", title);
   },
 
   info(msg, meta) {
-    console.log(`${C.cyan}[INFO]${C.reset}  ${msg}`);
+    out(`${C.cyan}[INFO]${C.reset}  ${msg}`);
     toFile("INFO", msg, meta);
   },
 
   success(msg, meta) {
-    console.log(`${C.green}[OK]${C.reset}    ${msg}`);
+    out(`${C.green}[OK]${C.reset}    ${msg}`);
     toFile("OK", msg, meta);
   },
 
   warn(msg, meta) {
-    console.log(`${C.yellow}[WARN]${C.reset}  ${msg}`);
+    out(`${C.yellow}[WARN]${C.reset}  ${msg}`);
     toFile("WARN", msg, meta);
   },
 
   error(msg, meta) {
-    console.error(`${C.red}[ERR]${C.reset}   ${msg}`);
+    err(`${C.red}[ERR]${C.reset}   ${msg}`);
     toFile("ERROR", msg, meta);
   },
 
   patched(microflow, activity, type) {
-    console.log(
+    out(
       `  ${C.green}✔${C.reset}  ${C.white}${microflow}${C.reset}` +
       `  ${C.dim}→${C.reset}  ${C.magenta}${activity}${C.reset}` +
       `  ${C.dim}(${type})${C.reset}`
@@ -88,29 +100,29 @@ const logger = {
   },
 
   skipped(microflow, activity, type, reason) {
-    console.log(
+    out(
       `  ${C.dim}–  ${microflow}  →  ${activity}  (${type}) — ${reason}${C.reset}`
     );
     toFile("SKIPPED", `${microflow} → ${activity}`, { type, reason });
   },
 
-  fatal(msg, err) {
-    console.error(`\n${C.red}${C.bold}[FATAL]  ${msg}${C.reset}`);
-    if (err) console.error(`${C.dim}${err.stack || err}${C.reset}`);
-    toFile("FATAL", msg, { stack: err?.stack });
+  fatal(msg, e) {
+    err(`\n${C.red}${C.bold}[FATAL]  ${msg}${C.reset}`);
+    if (e) err(`${C.dim}${e.stack || e}${C.reset}`);
+    toFile("FATAL", msg, { stack: e?.stack });
     process.exit(1);
   },
 
   summary(patched, skipped, errors, module) {
     const bar = "─".repeat(52);
-    console.log(`\n${C.bold}${bar}${C.reset}`);
-    console.log(`${C.bold}  Summary — module: ${module}${C.reset}`);
-    console.log(`${bar}`);
-    console.log(`  ${C.green}Patched${C.reset}   ${patched}`);
-    console.log(`  ${C.dim}Skipped   ${skipped}${C.reset}`);
-    console.log(`  ${C.red}Errors    ${errors}${C.reset}`);
-    console.log(`  Log file  ${LOG_FILE}`);
-    console.log(`${C.bold}${bar}${C.reset}\n`);
+    out(`\n${C.bold}${bar}${C.reset}`);
+    out(`${C.bold}  Summary — module: ${module}${C.reset}`);
+    out(`${bar}`);
+    out(`  ${C.green}Patched${C.reset}   ${patched}`);
+    out(`  ${C.dim}Skipped   ${skipped}${C.reset}`);
+    out(`  ${C.red}Errors    ${errors}${C.reset}`);
+    out(`  Log file  ${LOG_FILE}`);
+    out(`${C.bold}${bar}${C.reset}\n`);
     toFile("SUMMARY", "run complete", { patched, skipped, errors, module });
   },
 };

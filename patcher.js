@@ -24,6 +24,7 @@
 const fs   = require("fs");
 const path = require("path");
 const log  = require("./logger");
+const { Progress } = require("./progress");
 const {
   listUserModules,
   listModuleMicroflows,
@@ -83,6 +84,60 @@ class SafetyAbort extends Error {
   constructor(reason) { super(reason); this.name = "SafetyAbort"; }
 }
 
+// ── Diagnostic + per-microflow rollback helpers ──────────────────
+
+/**
+ * Write pre- and post-patch MDL for a failing microflow to
+ * mx-logs/verify-fail-<safe-label>-<ts>/ so the user can diff them and
+ * identify what mxcli mutated on rebuild.
+ */
+function dumpVerifyDiff(label, beforeMdl, afterMdl, reason) {
+  const ts       = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const safe     = label.replace(/[^\w.-]/g, "_");
+  const logDir   = path.join(process.cwd(), "mx-logs");
+  const dumpDir  = path.join(logDir, `verify-fail-${safe}-${ts}`);
+  fs.mkdirSync(dumpDir, { recursive: true });
+  fs.writeFileSync(path.join(dumpDir, "before.mdl"), beforeMdl ?? "", "utf8");
+  fs.writeFileSync(path.join(dumpDir, "after.mdl"),  afterMdl  ?? "", "utf8");
+  fs.writeFileSync(path.join(dumpDir, "reason.txt"),
+    `${label}\n${reason}\n\n` +
+    `before.mdl = MDL from describe BEFORE patch\n` +
+    `after.mdl  = MDL from describe AFTER patch (this is what mxcli left us with)\n\n` +
+    `A clean run would have these two identical except inside ON ERROR clauses.\n`,
+    "utf8");
+  return dumpDir;
+}
+
+/**
+ * Attempt to restore ONE microflow to its pre-patch state by re-executing
+ * its original MDL. Used when the apply+verify for a single microflow
+ * fails — lets the run continue for the other microflows instead of
+ * aborting everything and restoring the full snapshot.
+ *
+ * Returns { ok: true } if the microflow now fingerprints identically to
+ * its pre-patch MDL, or { ok: false, reason } if the rollback itself
+ * failed or left the microflow still diverged (caller must escalate to
+ * full snapshot restore).
+ */
+function tryPerMicroflowRollback(projectPath, candidate) {
+  try {
+    execMdl(projectPath, candidate.mdl);
+  } catch (e) {
+    return { ok: false, reason: `re-exec of original MDL failed: ${e.message}` };
+  }
+  let afterMdl;
+  try {
+    afterMdl = describeMicroflow(projectPath, candidate.mf.qualifiedName);
+  } catch (e) {
+    return { ok: false, reason: `post-rollback describe failed: ${e.message}` };
+  }
+  const verdict = verifyPatch(candidate.mdl, afterMdl);
+  if (!verdict.ok) {
+    return { ok: false, reason: `post-rollback fingerprint still diverged (${verdict.reason})` };
+  }
+  return { ok: true };
+}
+
 async function patch({
   projectPath, moduleName, allModules,
   errorHandling, handlerName, logTemplate,
@@ -118,6 +173,11 @@ async function patch({
   log.section("Pre-flight scan");
   const candidates = []; // [{ mod, mf, mdl, template, risk, patchCount, newMdl }]
 
+  // Pass 1: list microflows + resolve each module's template, so the
+  // progress bar can show a real total / percentage during the describe
+  // pass (which is the expensive part).
+  const planned = []; // [{ mod, mfs, template }]
+  let plannedTotal = 0;
   for (const mod of modules) {
     let mfs;
     try { mfs = listModuleMicroflows(projectPath, mod); }
@@ -131,22 +191,39 @@ async function patch({
       continue;
     }
 
-    for (const mf of mfs) {
-      let mdl;
-      try { mdl = describeMicroflow(projectPath, mf.qualifiedName); }
-      catch (e) { log.error(`describe failed for ${mf.qualifiedName}: ${e.message}`); continue; }
+    planned.push({ mod, mfs, template });
+    plannedTotal += mfs.length;
+  }
 
-      const ctx = {
-        strategy:      errorHandling,
-        microflowName: mf.name,
-        moduleName:    mod,
-        logNode:       mod,
-        handlerName,
-        template,
-      };
-      const { mdl: newMdl, patchCount } = transformMdl(mdl, ctx);
+  if (plannedTotal > 0) {
+    const scanProgress = new Progress({ total: plannedTotal, title: "Scanning microflows" });
+    log.setProgress(scanProgress);
+    scanProgress.start();
+    try {
+      for (const { mod, mfs, template } of planned) {
+        for (const mf of mfs) {
+          scanProgress.tick({ label: `${mod} / ${mf.name}` });
 
-      candidates.push({ mod, mf, mdl, newMdl, patchCount, ctx });
+          let mdl;
+          try { mdl = describeMicroflow(projectPath, mf.qualifiedName); }
+          catch (e) { log.error(`describe failed for ${mf.qualifiedName}: ${e.message}`); continue; }
+
+          const ctx = {
+            strategy:      errorHandling,
+            microflowName: mf.name,
+            moduleName:    mod,
+            logNode:       mod,
+            handlerName,
+            template,
+          };
+          const { mdl: newMdl, patchCount } = transformMdl(mdl, ctx);
+
+          candidates.push({ mod, mf, mdl, newMdl, patchCount, ctx });
+        }
+      }
+    } finally {
+      scanProgress.stop();
+      log.setProgress(null);
     }
   }
 
@@ -190,26 +267,65 @@ async function patch({
 
   // ── APPLY + VERIFY per microflow ──
   log.section("Applying patches");
-  let patched = 0;
-  let errors  = 0;
-  let aborted = false;
+  let patched        = 0;
+  let skippedVerify  = 0;  // skipped due to mxcli roundtrip issue, MF rolled back
+  let errors         = 0;
+  let aborted        = false;
 
   // Outcomes per microflow — used to write the CSV patch report and
   // mark everything correctly if a safety abort rolls us back.
   const outcomes = [];
   for (const c of skippedDone) outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: 0, strategy: "—", result: "skipped-complete", note: "" });
 
+  const applyProgress = new Progress({ total: eligible.length, title: "Applying patches" });
+  log.setProgress(applyProgress);
+  applyProgress.start();
+
+  // Helper: record the outcome + decide whether to continue or go nuclear.
+  // On any mxcli issue we try a per-microflow rollback first (re-exec the
+  // ORIGINAL MDL). Only if THAT also fails do we throw SafetyAbort and
+  // trigger the full-snapshot restore.
+  function handleSingleFailure(c, label, reason, noteForCsv, beforeMdl, afterMdl) {
+    // Diagnostic dump so user can see what mxcli mutated.
+    let dumpDir = null;
+    try {
+      dumpDir = dumpVerifyDiff(label, beforeMdl, afterMdl, reason);
+    } catch (_) { /* dump is best-effort */ }
+
+    log.warn(`${label}: ${reason}`);
+    if (dumpDir) log.info(`MDL diff dumped to: ${dumpDir}`);
+
+    // Attempt per-microflow rollback (only meaningful when we have the
+    // original MDL — which we always do for eligible candidates).
+    if (noBackup) {
+      // No per-microflow rollback without verification turned on; the user
+      // opted out of safety, so we honour that by escalating immediately.
+      outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "verification-failed", note: reason });
+      throw new SafetyAbort(`${label}: ${reason} (--no-backup was set)`);
+    }
+
+    const rolled = tryPerMicroflowRollback(projectPath, c);
+    if (!rolled.ok) {
+      outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "verification-failed", note: `${reason}; rollback also failed: ${rolled.reason}` });
+      throw new SafetyAbort(`${label}: ${reason}; rollback also failed (${rolled.reason})`);
+    }
+
+    log.success(`${label}: rolled back to original — skipping, continuing with the other microflows`);
+    outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "skipped-verify-failed", note: noteForCsv });
+    skippedVerify++;
+  }
+
   try {
     for (const c of eligible) {
       const label = `${c.mod}.${c.mf.name}`;
+      applyProgress.tick({ label });
 
       // Apply
       try {
         execMdl(projectPath, c.newMdl);
       } catch (e) {
-        log.error(`exec failed for ${label}: ${e.message}`);
-        outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "error", note: e.message });
-        throw new SafetyAbort(`mxcli exec failed on ${label}`);
+        handleSingleFailure(c, label, `mxcli exec failed: ${e.message}`, e.message, c.mdl, null);
+        continue;
       }
 
       // Verify (skip if user asked to)
@@ -217,15 +333,13 @@ async function patch({
         let afterMdl;
         try { afterMdl = describeMicroflow(projectPath, c.mf.qualifiedName); }
         catch (e) {
-          log.error(`post-patch describe failed for ${label}: ${e.message}`);
-          outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "error", note: "post-patch describe failed" });
-          throw new SafetyAbort(`could not verify ${label} after patch`);
+          handleSingleFailure(c, label, `post-patch describe failed: ${e.message}`, "post-patch describe failed", c.mdl, null);
+          continue;
         }
         const verdict = verifyPatch(c.mdl, afterMdl);
         if (!verdict.ok) {
-          log.error(`verification FAILED for ${label}: ${verdict.reason}`);
-          outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "verification-failed", note: verdict.reason });
-          throw new SafetyAbort(`verification failed on ${label}`);
+          handleSingleFailure(c, label, `structural mismatch outside ON ERROR clauses — mxcli appears to have mutated data on rebuild`, verdict.reason, c.mdl, afterMdl);
+          continue;
         }
       }
 
@@ -260,6 +374,9 @@ async function patch({
     } else {
       throw e;
     }
+  } finally {
+    applyProgress.stop();
+    log.setProgress(null);
   }
 
   // ── SNAPSHOT PRESERVATION ──
@@ -299,9 +416,15 @@ async function patch({
     }
   }
 
+  if (skippedVerify > 0) {
+    log.warn(`${skippedVerify} microflow(s) skipped because mxcli's describe→exec roundtrip mutated unrelated data.`);
+    log.info(`The affected microflows were rolled back to their original state individually — other microflows were patched normally.`);
+    log.info(`MDL diffs for each are in mx-logs/verify-fail-*/. Share the before.mdl/after.mdl pair if you want the pattern added to the risk-skip list.`);
+  }
+
   log.summary(
     patched,
-    skippedDone.length,
+    skippedDone.length + skippedVerify,
     errors,
     allModules ? "(all user modules)" : moduleName,
   );

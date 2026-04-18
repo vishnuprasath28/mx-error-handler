@@ -4,6 +4,14 @@ A small command-line tool that sets up error handling on risky activities (Java 
 
 ---
 
+## What's new in 0.3.0
+
+- **Live progress bar in every command.** A two-line widget (bar on top, `module / microflow` underneath) shows which microflow is being worked on — no more silent multi-minute scans on large projects. Non-TTY runs (CI, `>` redirect) fall back to a periodic heartbeat line so logs stay readable.
+- **One bad microflow no longer aborts the whole run.** If `patch` hits an mxcli roundtrip issue on a single microflow, that one microflow is rolled back to its pre-patch state individually and marked `skipped-verify-failed` in the CSV. The other microflows still get patched. The full-snapshot restore is now a last-resort fallback, only triggered when the per-microflow rollback *itself* fails.
+- **MDL diff dumped on verification failure.** When verification flags an mxcli mutation, the pre- and post-patch MDL (plus a reason line) are written to `mx-logs/verify-fail-<Module.MF>-<ts>/`. Diff the two files to see exactly what mxcli changed — useful for reporting bugs or adding the pattern to the risk-skip list.
+
+---
+
 ## What's new in 0.2.0
 
 - **New `restore` subcommand** — roll a project back to any `_mxerrhandler_snapshot_*` folder if Studio Pro surfaces a problem the in-process verification didn't catch.
@@ -71,7 +79,7 @@ mx-error-handler patch --all-modules --dry-run --project ./App.mpr
 ```bash
 mx-error-handler patch --all-modules --project ./App.mpr
 ```
-Before any write, the tool snapshots `App.mpr` + `mprcontents/`. After every patched microflow it re-checks that nothing else changed. Any failure → automatic full restore. See [Safety guarantees](#safety-guarantees) below.
+Before any write, the tool snapshots `App.mpr` + `mprcontents/`. After every patched microflow it re-checks that nothing else changed. If *one* microflow fails verification, just that microflow is rolled back to its original state and skipped; the rest still get patched. Only if the per-microflow rollback itself fails does the whole run abort and restore from the snapshot. See [Safety guarantees](#safety-guarantees) below.
 
 ---
 
@@ -223,7 +231,7 @@ The tool only touches **bare** error clauses:
 | `ON ERROR WITHOUT ROLLBACK { ... };` | **Skipped.** |
 | `ON ERROR CONTINUE;` (you chose to swallow) | **Skipped.** |
 
-Every microflow that needs patching is attempted. The verification layer (see below) re-describes each one after patching and checks that nothing changed beyond the error handler. If mxcli happened to drop data on the rebuild, that microflow is automatically reverted from the snapshot — the successful ones stay.
+Every microflow that needs patching is attempted. The verification layer (see below) re-describes each one after patching and checks that nothing changed beyond the error handler. If mxcli happened to drop data on the rebuild, that microflow is individually rolled back to its pre-patch state and marked `skipped-verify-failed` in the CSV — the successful ones stay patched.
 
 Run the tool twice in a row — the second run does nothing new. Safe to wire into CI or a pre-commit hook.
 
@@ -231,7 +239,7 @@ Run the tool twice in a row — the second run does nothing new. Safe to wire in
 
 ## Safety guarantees
 
-Three independent layers protect your project. **A `patch` run either fully succeeds or leaves the project bit-for-bit identical to where it started — there is no in-between.**
+Three independent layers protect your project. **Each microflow is patched atomically.** If one microflow can't be patched cleanly, it's rolled back to its original state individually and the run continues. The full-snapshot restore is only used if that per-microflow rollback itself fails.
 
 ### Layer 1 — Snapshot before any write
 Before patching, the tool copies `App.mpr` + the entire `mprcontents/` folder into `_mxerrhandler_snapshot_<timestamp>/` next to your project. Restore is a plain file copy (no SQLite editing, no state-tracking). **The snapshot is always kept** — including after a successful run — because Studio Pro sometimes surfaces corruption that the in-process verification cannot see. Once you've opened `App.mpr` and confirmed it loads cleanly, reclaim disk with `mx-error-handler cleanup`. If something is wrong, roll back with `mx-error-handler restore`.
@@ -240,7 +248,14 @@ Before patching, the tool copies `App.mpr` + the entire `mprcontents/` folder in
 Earlier drafts had a pre-flight skip for "risky" constructs. It's been removed — everything gets attempted, and Layer 3 is the real safety net.
 
 ### Layer 3 — Per-microflow verification
-After every `mxcli exec`, the tool re-describes the microflow and compares its structural fingerprint (error handlers stripped, whitespace normalized) to the pre-patch fingerprint. Any difference outside the `ON ERROR` clauses is treated as corruption — the run aborts and the snapshot is restored automatically.
+After every `mxcli exec`, the tool re-describes the microflow and compares its structural fingerprint (error handlers stripped, whitespace normalized) to the pre-patch fingerprint. Any difference outside the `ON ERROR` clauses is treated as corruption. The tool then:
+
+1. **Dumps the pre- and post-patch MDL** to `mx-logs/verify-fail-<Module.MF>-<ts>/` so you can diff them.
+2. **Attempts a per-microflow rollback** by re-executing the original MDL, then re-verifying.
+3. If the rollback succeeds → the microflow is marked `skipped-verify-failed` and the run continues with the remaining microflows.
+4. If the rollback *also* fails → the full snapshot is restored and the run aborts.
+
+In short: one bad microflow skips itself; only genuinely broken mxcli state triggers the nuclear option.
 
 ### Override flags (advanced — defaults are safe)
 

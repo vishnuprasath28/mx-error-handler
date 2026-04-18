@@ -34,15 +34,33 @@ const path = require("path");
  * Recursively copy a directory tree. We don't use fs.cpSync because it
  * was only added in Node 16.7 and behaves differently across versions;
  * a manual recursion is predictable and works on every Node 18+ build.
+ *
+ * `onFile(relPath)` is invoked after each file copy for progress reporting.
  */
-function copyDirSync(src, dst) {
+function copyDirSync(src, dst, onFile, relBase = "") {
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, entry.name);
-    const d = path.join(dst, entry.name);
-    if (entry.isDirectory()) copyDirSync(s, d);
-    else fs.copyFileSync(s, d);
+    const s   = path.join(src, entry.name);
+    const d   = path.join(dst, entry.name);
+    const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+    if (entry.isDirectory()) copyDirSync(s, d, onFile, rel);
+    else {
+      fs.copyFileSync(s, d);
+      if (onFile) onFile(rel);
+    }
   }
+}
+
+/** Count the files in a directory tree. Used to size restore progress. */
+function countFilesSync(dir) {
+  let n = 0;
+  if (!fs.existsSync(dir)) return 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) n += countFilesSync(p);
+    else n++;
+  }
+  return n;
 }
 
 function snapshotName() {
@@ -84,8 +102,11 @@ function createSnapshot(projectPath) {
  * Restore from a snapshot. Overwrites App.mpr and replaces mprcontents/
  * entirely (any new files added during the run are deleted, any modified
  * files are reverted).
+ *
+ * `onProgress({ phase, current, total, label })` is called at meaningful
+ * milestones so a caller can render a live progress bar.
  */
-function restoreSnapshot(projectPath, snapshotPath) {
+function restoreSnapshot(projectPath, snapshotPath, onProgress) {
   const projectDir = path.dirname(path.resolve(projectPath));
   const mprFile    = path.basename(projectPath);
 
@@ -94,16 +115,24 @@ function restoreSnapshot(projectPath, snapshotPath) {
   if (!fs.existsSync(snapMpr)) {
     throw new Error(`snapshot is missing ${mprFile} — refusing to restore from corrupt snapshot`);
   }
+  if (onProgress) onProgress({ phase: "mpr", current: 0, total: 1, label: mprFile });
   fs.copyFileSync(snapMpr, projectPath);
+  if (onProgress) onProgress({ phase: "mpr", current: 1, total: 1, label: mprFile });
 
   // mprcontents/
   const liveMprcontents = path.join(projectDir, "mprcontents");
   const snapMprcontents = path.join(snapshotPath, "mprcontents");
   if (fs.existsSync(snapMprcontents)) {
     if (fs.existsSync(liveMprcontents)) {
+      if (onProgress) onProgress({ phase: "clear", current: 0, total: 0, label: "removing live mprcontents/" });
       fs.rmSync(liveMprcontents, { recursive: true, force: true });
     }
-    copyDirSync(snapMprcontents, liveMprcontents);
+    const total = countFilesSync(snapMprcontents);
+    let   done  = 0;
+    copyDirSync(snapMprcontents, liveMprcontents, (rel) => {
+      done++;
+      if (onProgress) onProgress({ phase: "mprcontents", current: done, total, label: rel });
+    });
   }
 }
 
@@ -282,6 +311,7 @@ module.exports = {
   restoreSnapshot,
   deleteSnapshot,
   listSnapshots,
+  countFilesSync,
   formatBytes,
   // risk scan
   checkRoundtripRisk,

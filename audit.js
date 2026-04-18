@@ -18,6 +18,7 @@
 const fs   = require("fs");
 const path = require("path");
 const log  = require("./logger");
+const { Progress } = require("./progress");
 const {
   listUserModules,
   listModuleMicroflows,
@@ -126,16 +127,48 @@ async function audit({ projectPath, moduleName, allModules, output = "both" }) {
   let brokenMicroflows = 0;
   const modulesWithIssues = new Set();
 
+  log.info(`Modules : ${modules.length}`);
+
+  // ── Pass 1: enumerate microflows per module so total is known up front.
+  // listModuleMicroflows is one cheap mxcli call per module — irrelevant
+  // compared to the describe pass — and lets us show a real percentage.
+  const planned = [];
+  let grandTotal = 0;
   for (const mod of modules) {
-    let mfs;
-    try { mfs = listModuleMicroflows(projectPath, mod); }
-    catch (e) { log.error(`listing microflows for ${mod}: ${e.message}`); continue; }
+    try {
+      const mfs = listModuleMicroflows(projectPath, mod);
+      planned.push({ mod, mfs });
+      grandTotal += mfs.length;
+    } catch (e) {
+      log.error(`listing microflows for ${mod}: ${e.message}`);
+    }
+  }
+
+  if (grandTotal === 0) {
+    log.warn("No microflows found in the selected modules.");
+    return 0;
+  }
+
+  // ── Pass 2: describe each microflow under the progress widget.
+  const progress = new Progress({ total: grandTotal, title: "Auditing microflows" });
+  log.setProgress(progress);
+  progress.start();
+
+  for (const { mod, mfs } of planned) {
+    const modStart = Date.now();
+    let   modErrors = 0;
 
     for (const mf of mfs) {
       totalMicroflows++;
+      progress.tick({ label: `${mod} / ${mf.name}` });
+
       let mdl;
       try { mdl = describeMicroflow(projectPath, mf.qualifiedName); }
-      catch (e) { log.error(`describing ${mf.qualifiedName}: ${e.message}`); continue; }
+      catch (e) {
+        modErrors++;
+        log.error(`describing ${mf.qualifiedName}: ${e.message}`);
+        continue;
+      }
 
       const c      = classifyMdl(mdl);
       const status = microflowStatus(c);
@@ -156,7 +189,14 @@ async function audit({ projectPath, moduleName, allModules, output = "both" }) {
         status,
       });
     }
+
+    const dt = ((Date.now() - modStart) / 1000).toFixed(1);
+    const tail = modErrors ? ` · ${modErrors} error(s)` : "";
+    log.info(`[${mod}] ${mfs.length} microflow(s) scanned in ${dt}s${tail}`);
   }
+
+  progress.stop();
+  log.setProgress(null);
 
   // ── Build CSV ─────────────────────────────────────────────
   let csv = "";
