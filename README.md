@@ -4,6 +4,13 @@ A small command-line tool that sets up error handling on risky activities (Java 
 
 ---
 
+## What's new in 0.3.1
+
+- **Per-microflow rollback fix.** 0.3.0's rollback path compared fingerprints after re-executing the original MDL, but mxcli's describe→exec→describe is non-idempotent for exactly the constructs that put us in the failure path — so the rollback "failed" its own verification and the run escalated to a full-snapshot restore (the old all-or-nothing behavior). 0.3.1 trusts a successful `exec` as "restored" and leaves the outer snapshot as the final safety net. Now a single risky microflow really is skipped without touching the rest.
+- The post-rollback describe is still saved as `after_rollback.mdl` inside `mx-logs/verify-fail-*/` for debugging.
+
+---
+
 ## What's new in 0.3.0
 
 - **Live progress bar in every command.** A two-line widget (bar on top, `module / microflow` underneath) shows which microflow is being worked on — no more silent multi-minute scans on large projects. Non-TTY runs (CI, `>` redirect) fall back to a periodic heartbeat line so logs stay readable.

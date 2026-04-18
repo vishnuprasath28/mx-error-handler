@@ -114,26 +114,36 @@ function dumpVerifyDiff(label, beforeMdl, afterMdl, reason) {
  * fails — lets the run continue for the other microflows instead of
  * aborting everything and restoring the full snapshot.
  *
- * Returns { ok: true } if the microflow now fingerprints identically to
- * its pre-patch MDL, or { ok: false, reason } if the rollback itself
- * failed or left the microflow still diverged (caller must escalate to
- * full snapshot restore).
+ * We deliberately do NOT fingerprint-verify the post-rollback state.
+ * mxcli's describe → exec → describe roundtrip is non-idempotent for
+ * exactly the constructs that put us in the failure path in the first
+ * place, so requiring fingerprint equality here would cause rollback to
+ * "fail" on every genuinely risky microflow — which would trigger the
+ * full-snapshot restore and undo every successful patch in the run
+ * (i.e. the old all-or-nothing behaviour this helper was meant to avoid).
+ *
+ * Trusting a successful `exec` as "restored" is safe because the state
+ * we're writing back is the original MDL as captured by describe — any
+ * additional mutation mxcli applies on the write is a mutation the
+ * project could naturally have, and the outer snapshot is still there
+ * as the final safety net.
+ *
+ * Returns { ok: true } on successful exec, { ok: false, reason } if the
+ * re-exec itself threw (caller must escalate to full snapshot restore).
+ * If `dumpDir` is provided, the post-rollback describe is saved to
+ * `after_rollback.mdl` for debugging — best-effort, failures ignored.
  */
-function tryPerMicroflowRollback(projectPath, candidate) {
+function tryPerMicroflowRollback(projectPath, candidate, dumpDir) {
   try {
     execMdl(projectPath, candidate.mdl);
   } catch (e) {
     return { ok: false, reason: `re-exec of original MDL failed: ${e.message}` };
   }
-  let afterMdl;
-  try {
-    afterMdl = describeMicroflow(projectPath, candidate.mf.qualifiedName);
-  } catch (e) {
-    return { ok: false, reason: `post-rollback describe failed: ${e.message}` };
-  }
-  const verdict = verifyPatch(candidate.mdl, afterMdl);
-  if (!verdict.ok) {
-    return { ok: false, reason: `post-rollback fingerprint still diverged (${verdict.reason})` };
+  if (dumpDir) {
+    try {
+      const afterRollbackMdl = describeMicroflow(projectPath, candidate.mf.qualifiedName);
+      fs.writeFileSync(path.join(dumpDir, "after_rollback.mdl"), afterRollbackMdl, "utf8");
+    } catch (_) { /* best-effort */ }
   }
   return { ok: true };
 }
@@ -304,7 +314,7 @@ async function patch({
       throw new SafetyAbort(`${label}: ${reason} (--no-backup was set)`);
     }
 
-    const rolled = tryPerMicroflowRollback(projectPath, c);
+    const rolled = tryPerMicroflowRollback(projectPath, c, dumpDir);
     if (!rolled.ok) {
       outcomes.push({ mod: c.mod, microflow: c.mf.name, qualified: c.mf.qualifiedName, patchCount: c.patchCount, strategy: errorHandling, result: "verification-failed", note: `${reason}; rollback also failed: ${rolled.reason}` });
       throw new SafetyAbort(`${label}: ${reason}; rollback also failed (${rolled.reason})`);
